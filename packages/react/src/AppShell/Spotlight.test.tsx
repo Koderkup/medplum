@@ -732,4 +732,134 @@ describe('Spotlight', () => {
       valueSetSpy.mockRestore();
     });
   });
+  describe('Search shortcuts', () => {
+    test('resolves an email shortcut to a PatientList email search without fetching resource types', async () => {
+      const graphqlSpy = vi.spyOn(medplum, 'graphql').mockResolvedValue({
+        data: {
+          Patients1: undefined,
+          Patients2: undefined,
+          ServiceRequestList: undefined,
+          ShortcutResults: [
+            {
+              resourceType: 'Patient',
+              id: 'jane-123',
+              name: [{ given: ['Jane'], family: 'Smith' }],
+              birthDate: '1985-05-15',
+            },
+          ],
+        },
+      });
+      const valueSetSpy = vi.spyOn(medplum, 'valueSetExpand').mockResolvedValue({
+        resourceType: 'ValueSet',
+        status: 'active',
+        expansion: { timestamp: new Date().toISOString(), contains: [] },
+      });
+
+      await setup();
+
+      const searchInput = screen.getByPlaceholderText('Start typing to search…');
+      await act(async () => {
+        fireEvent.change(searchInput, { target: { value: 'email:foo@bar.com' } });
+      });
+
+      await waitFor(
+        () => {
+          expect(document.querySelector('[data-action][group="Patients"]')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+
+      expect(graphqlSpy).toHaveBeenCalledWith(
+        '{ ShortcutResults: PatientList(email: "foo@bar.com", _count: 5) { resourceType id identifier { system value } name { given family } birthDate photo { url contentType } } }'
+      );
+      // The results were already filtered by the server, so the free-text filter must not drop them
+      expect(document.querySelector('.mantine-Spotlight-actionLabel')?.textContent).toBe('Jane Smith');
+      // Resource type suggestions make no sense for a field-specific search
+      expect(valueSetSpy).not.toHaveBeenCalled();
+
+      graphqlSpy.mockRestore();
+      valueSetSpy.mockRestore();
+    });
+
+    test('accepts the equals separator', async () => {
+      const graphqlSpy = vi.spyOn(medplum, 'graphql').mockResolvedValue({
+        data: { Patients1: undefined, Patients2: undefined, ServiceRequestList: undefined, ShortcutResults: [] },
+      });
+
+      await setup();
+
+      const searchInput = screen.getByPlaceholderText('Start typing to search…');
+      await act(async () => {
+        fireEvent.change(searchInput, { target: { value: 'phone=5551234567' } });
+      });
+
+      await waitFor(
+        () => {
+          expect(graphqlSpy).toHaveBeenCalledWith(
+            '{ ShortcutResults: PatientList(phone: "5551234567", _count: 5) { resourceType id identifier { system value } name { given family } birthDate photo { url contentType } } }'
+          );
+        },
+        { timeout: 3000 }
+      );
+
+      graphqlSpy.mockRestore();
+    });
+
+    test('shows "No results found" when a shortcut matches nothing', async () => {
+      const graphqlSpy = vi.spyOn(medplum, 'graphql').mockResolvedValue({
+        data: { Patients1: undefined, Patients2: undefined, ServiceRequestList: undefined, ShortcutResults: [] },
+      });
+
+      await setup();
+
+      const searchInput = screen.getByPlaceholderText('Start typing to search…');
+      await act(async () => {
+        fireEvent.change(searchInput, { target: { value: 'mrn:does-not-exist' } });
+      });
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('No results found')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+
+      graphqlSpy.mockRestore();
+    });
+
+    test('falls back to the default search for an unknown keyword', async () => {
+      const graphqlSpy = vi.spyOn(medplum, 'graphql').mockResolvedValue({
+        data: { Patients1: [], Patients2: [], ServiceRequestList: undefined },
+      });
+      const valueSetSpy = vi.spyOn(medplum, 'valueSetExpand').mockResolvedValue({
+        resourceType: 'ValueSet',
+        status: 'active',
+        expansion: { timestamp: new Date().toISOString(), contains: [] },
+      });
+
+      await setup();
+
+      const searchInput = screen.getByPlaceholderText('Start typing to search…');
+      await act(async () => {
+        fireEvent.change(searchInput, { target: { value: 'npi:1234567890' } });
+      });
+
+      await waitFor(
+        () => {
+          expect(graphqlSpy).toHaveBeenCalledWith(expect.stringContaining('PatientList(name: "npi:1234567890"'));
+        },
+        { timeout: 3000 }
+      );
+      expect(valueSetSpy).toHaveBeenCalled();
+
+      graphqlSpy.mockRestore();
+      valueSetSpy.mockRestore();
+    });
+
+    test('shows a tip about shortcuts in the empty state', async () => {
+      await setup();
+
+      expect(screen.getByText(/Tip: search by a specific field/)).toBeInTheDocument();
+    });
+  });
 });

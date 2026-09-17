@@ -11,6 +11,7 @@ import { IconSearch } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
 import { ResourceAvatar } from '../ResourceAvatar/ResourceAvatar';
+import { buildShortcutGraphQLQuery, parseSearchShortcut } from './spotlight-search';
 import classes from './Spotlight.module.css';
 
 const DEBOUNCE_MS = 200;
@@ -110,6 +111,26 @@ function SpotlightActionItem({ action, group, highlightQuery }: SpotlightActionI
 }
 
 /**
+ * Selects the action groups to render for a query.
+ *
+ * A shortcut query (e.g. `email:foo@bar.com`) was already resolved server-side, so the free-text
+ * label/description filter must not be applied on top of it - the results would never mention the
+ * raw query string. Plain queries keep the existing filter behaviour.
+ * @param query - The search query.
+ * @param groups - The action groups returned by the search.
+ * @returns The action groups to render.
+ */
+function filterActions(query: string, groups: SpotlightLinkActionGroup[]): SpotlightLinkActionGroup[] {
+  if (!query) {
+    return [];
+  }
+  if (parseSearchShortcut(query)) {
+    return groups;
+  }
+  return filterActionGroups(query, groups);
+}
+
+/**
  * Filters action groups by query (matching label or description), dropping empty groups.
  * Mantine's `defaultSpotlightFilter` is internal to `@mantine/spotlight` and the composable API
  * has no `filter` prop, so the same label/description matching is applied here.
@@ -136,6 +157,7 @@ interface SearchGraphQLResponse {
     readonly Patients1: Patient[] | undefined;
     readonly Patients2: Patient[] | undefined;
     readonly ServiceRequestList: ServiceRequest[] | undefined;
+    readonly ShortcutResults?: Patient[] | undefined;
   };
 }
 
@@ -147,6 +169,10 @@ function KeyboardHint(): JSX.Element {
       </Text>
       <Text size="sm" c="dimmed">
         (<Kbd>Ctrl</Kbd> + <Kbd>K</Kbd> on Windows)
+      </Text>
+      <Text size="sm" c="dimmed">
+        Tip: search by a specific field with <Kbd>email:</Kbd>, <Kbd>phone:</Kbd>, <Kbd>mrn:</Kbd>, <Kbd>name:</Kbd>,{' '}
+        <Kbd>birthdate:</Kbd> or <Kbd>address:</Kbd>.
       </Text>
     </Stack>
   );
@@ -161,8 +187,9 @@ export function Spotlight({ patientsOnly, staticActions }: SpotlightProps): JSX.
   const debouncedSearch = useDebouncedCallback((searchQuery: string) => {
     const graphqlQuery = buildGraphQLQuery(searchQuery);
 
-    if (patientsOnly) {
-      // Only search patients
+    if (patientsOnly || parseSearchShortcut(searchQuery)) {
+      // Only search patients: either the caller asked for patients only, or the query is a
+      // shortcut such as `email:foo@bar.com`, which always resolves to a Patient search.
       medplum
         .graphql(graphqlQuery)
         .then((response: SearchGraphQLResponse) => {
@@ -205,7 +232,7 @@ export function Spotlight({ patientsOnly, staticActions }: SpotlightProps): JSX.
   };
 
   const showStaticActions = !query && !!staticActions?.length;
-  const filteredActions = query ? filterActionGroups(query, actions) : [];
+  const filteredActions = filterActions(query, actions);
 
   // Empty-state content, shown (via Spotlight.Empty) only when no actions are listed.
   let emptyContent: ReactNode;
@@ -279,6 +306,10 @@ export function Spotlight({ patientsOnly, staticActions }: SpotlightProps): JSX.
 }
 
 function buildGraphQLQuery(input: string): string {
+  const shortcut = parseSearchShortcut(input);
+  if (shortcut) {
+    return buildShortcutGraphQLQuery(shortcut);
+  }
   const escaped = JSON.stringify(input);
   if (isUUID(input)) {
     return `{
@@ -331,6 +362,9 @@ function getResourcesFromResponse(response: SearchGraphQLResponse): HeaderSearch
   }
   if (response.data.Patients2) {
     resources.push(...response.data.Patients2);
+  }
+  if (response.data.ShortcutResults) {
+    resources.push(...response.data.ShortcutResults);
   }
   if (response.data.ServiceRequestList) {
     resources.push(...response.data.ServiceRequestList);
